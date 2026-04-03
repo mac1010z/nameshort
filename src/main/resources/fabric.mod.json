@@ -1,0 +1,18 @@
+{
+	"schemaVersion": 1,
+	"id": "nameshort",
+	"version": "${version}",
+	"name": "NameShort",
+	"description": "Create custom command shortcuts with /sc",
+	"entrypoints": {
+		"main": [
+			"com.example.sc.SCMod"
+		]
+	},
+	"depends": {
+		"fabricloader": ">=0.15.11",
+		"fabric-api": "*",
+		"minecraft": "~1.21.1",
+		"java": ">=21"
+	}
+}
