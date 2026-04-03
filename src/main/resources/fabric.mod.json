@@ -2,8 +2,14 @@
 	"schemaVersion": 1,
 	"id": "nameshort",
 	"version": "${version}",
-	"name": "NameShort",
-	"description": "Create custom command shortcuts with /sc",
+	"name": "nameshort",
+	"description": "nameshort lets you create personal command shortcuts so you can run long or complex commands instantly. Use /scm add +/command+ name to save a shortcut, then run it anytime with /sc name. Shortcuts support tab completion, are saved per player, and persist across restarts. Manage your shortcuts with /scm list, /scm edit, /scm delete, and /scm delete all. Create aliases for existing shortcuts with /scm alias, and remove them individually or along with everything pointing to the same command using /scm alias delete name related.",
+	"authors": ["macswag"],
+	"contact": {
+		"homepage": "https://github.com/mac1010z/nameshort",
+		"sources": "https://github.com/mac1010z/nameshort",
+		"issues": "https://github.com/mac1010z/nameshort/issues"
+	},
 	"entrypoints": {
 		"main": [
 			"com.example.sc.SCMod"
