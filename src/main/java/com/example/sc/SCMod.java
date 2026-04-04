@@ -38,12 +38,9 @@ public class SCMod implements ModInitializer {
 
             // /sc <name> [trailing args...] — run a shortcut
             dispatcher.register(literal("sc")
-                .then(argument("name", StringArgumentType.word())
+                .then(argument("input", StringArgumentType.greedyString())
                     .suggests(playerShortcutSuggestions())
-                    .executes(this::runShortcut)
-                    .then(argument("args", StringArgumentType.greedyString())
-                        .executes(this::runShortcutWithArgs)
-                    )
+                    .executes(this::runShortcutFromInput)
                 )
             );
 
@@ -115,7 +112,11 @@ public class SCMod implements ModInitializer {
 
     private SuggestionProvider<ServerCommandSource> playerShortcutSuggestions() {
         return (ctx, builder) -> {
-            getShortcuts(ctx.getSource()).keySet().forEach(builder::suggest);
+            String remaining = builder.getRemaining();
+            // Only suggest shortcut names (first word), not trailing args
+            if (!remaining.contains(" ")) {
+                getShortcuts(ctx.getSource()).keySet().forEach(builder::suggest);
+            }
             return builder.buildFuture();
         };
     }
@@ -180,29 +181,20 @@ public class SCMod implements ModInitializer {
 
     // ── Commands ─────────────────────────────────────────────────────────────
 
-    private int runShortcut(CommandContext<ServerCommandSource> ctx) {
-        String name = StringArgumentType.getString(ctx, "name");
-        Map<String, String> shortcuts = getShortcuts(ctx.getSource());
+    private int runShortcutFromInput(CommandContext<ServerCommandSource> ctx) {
+        String input = StringArgumentType.getString(ctx, "input").trim();
+        int spaceIdx = input.indexOf(' ');
+        String name = spaceIdx == -1 ? input : input.substring(0, spaceIdx);
+        String trailingArgs = spaceIdx == -1 ? null : input.substring(spaceIdx + 1).trim();
 
+        Map<String, String> shortcuts = getShortcuts(ctx.getSource());
         if (!shortcuts.containsKey(name)) {
             ctx.getSource().sendError(Text.literal("Shortcut '" + name + "' not found"));
             return 0;
         }
 
-        return execute(ctx.getSource(), shortcuts.get(name), null);
-    }
-
-    private int runShortcutWithArgs(CommandContext<ServerCommandSource> ctx) {
-        String name = StringArgumentType.getString(ctx, "name");
-        String args = StringArgumentType.getString(ctx, "args");
-        Map<String, String> shortcuts = getShortcuts(ctx.getSource());
-
-        if (!shortcuts.containsKey(name)) {
-            ctx.getSource().sendError(Text.literal("Shortcut '" + name + "' not found"));
-            return 0;
-        }
-
-        return execute(ctx.getSource(), shortcuts.get(name), args);
+        return execute(ctx.getSource(), shortcuts.get(name),
+            (trailingArgs == null || trailingArgs.isEmpty()) ? null : trailingArgs);
     }
 
     private int addShortcut(CommandContext<ServerCommandSource> ctx) {

@@ -10,6 +10,7 @@
 		"sources": "https://github.com/mac1010z/nameshort",
 		"issues": "https://github.com/mac1010z/nameshort/issues"
 	},
+	"icon": "nameshort.png",
 	"entrypoints": {
 		"main": [
 			"com.example.sc.SCMod"
