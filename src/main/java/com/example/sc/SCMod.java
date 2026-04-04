@@ -24,7 +24,8 @@ import static net.minecraft.server.command.CommandManager.argument;
 
 public class SCMod implements ModInitializer {
 
-    // UUID -> (shortcutName -> command)
+    private static final String CHAIN_PREFIX = "__chain__:";
+    // UUID -> (shortcutName -> command or chain)
     private static final Map<String, Map<String, String>> playerShortcuts = new HashMap<>();
     private static final Path FILE = Paths.get("config/nameshort_shortcuts.json");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -35,18 +36,21 @@ public class SCMod implements ModInitializer {
 
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
 
-            // /sc <name> — run a shortcut
+            // /sc <name> [trailing args...] — run a shortcut
             dispatcher.register(literal("sc")
                 .then(argument("name", StringArgumentType.word())
                     .suggests(playerShortcutSuggestions())
                     .executes(this::runShortcut)
+                    .then(argument("args", StringArgumentType.greedyString())
+                        .executes(this::runShortcutWithArgs)
+                    )
                 )
             );
 
             // /scm — manage shortcuts
             dispatcher.register(literal("scm")
 
-                // /scm add +/command+ name
+                // /scm add +/command+ name  OR  /scm add +-sc1--sc2-+ name
                 .then(literal("add")
                     .then(argument("input", StringArgumentType.greedyString())
                         .executes(this::addShortcut)
@@ -116,7 +120,7 @@ public class SCMod implements ModInitializer {
         };
     }
 
-    // ── Helper ───────────────────────────────────────────────────────────────
+    // ── Helpers ───────────────────────────────────────────────────────────────
 
     private Map<String, String> getShortcuts(ServerCommandSource source) {
         String uuid = source.getPlayer() != null
@@ -133,6 +137,47 @@ public class SCMod implements ModInitializer {
         return cmd.startsWith("/") ? cmd : "/" + cmd;
     }
 
+    // Returns shortcut names if input is a chain (e.g. +-sc1--sc2-+), else null
+    private String[] extractChainNames(String input) {
+        int start = input.indexOf('+');
+        int end = input.lastIndexOf('+');
+        if (start == -1 || end == -1 || start == end) return null;
+        String content = input.substring(start + 1, end).trim();
+        if (!content.matches("(-[a-z0-9_]+-)+")) return null;
+        String[] parts = content.split("-");
+        ArrayList<String> names = new ArrayList<>();
+        for (String part : parts) {
+            if (!part.isEmpty()) names.add(part);
+        }
+        return names.isEmpty() ? null : names.toArray(new String[0]);
+    }
+
+    private String parseName(String input) {
+        String name = input.substring(input.lastIndexOf('+') + 1).trim();
+        return name;
+    }
+
+    // Execute a stored value (command or chain), optionally appending trailing args
+    private int execute(ServerCommandSource source, String stored, String trailingArgs) {
+        if (stored.startsWith(CHAIN_PREFIX)) {
+            String[] names = stored.substring(CHAIN_PREFIX.length()).split(" ");
+            Map<String, String> shortcuts = getShortcuts(source);
+            for (String n : names) {
+                if (!shortcuts.containsKey(n)) {
+                    source.sendError(Text.literal("Chain: shortcut '" + n + "' not found"));
+                    return 0;
+                }
+                // Chains don't forward trailing args — each runs as saved
+                execute(source, shortcuts.get(n), null);
+            }
+            return 1;
+        } else {
+            String cmd = trailingArgs != null ? stored + " " + trailingArgs : stored;
+            source.getServer().getCommandManager().executeWithPrefix(source, cmd);
+            return 1;
+        }
+    }
+
     // ── Commands ─────────────────────────────────────────────────────────────
 
     private int runShortcut(CommandContext<ServerCommandSource> ctx) {
@@ -144,27 +189,58 @@ public class SCMod implements ModInitializer {
             return 0;
         }
 
-        ctx.getSource().getServer().getCommandManager()
-            .executeWithPrefix(ctx.getSource(), shortcuts.get(name));
-        return 1;
+        return execute(ctx.getSource(), shortcuts.get(name), null);
+    }
+
+    private int runShortcutWithArgs(CommandContext<ServerCommandSource> ctx) {
+        String name = StringArgumentType.getString(ctx, "name");
+        String args = StringArgumentType.getString(ctx, "args");
+        Map<String, String> shortcuts = getShortcuts(ctx.getSource());
+
+        if (!shortcuts.containsKey(name)) {
+            ctx.getSource().sendError(Text.literal("Shortcut '" + name + "' not found"));
+            return 0;
+        }
+
+        return execute(ctx.getSource(), shortcuts.get(name), args);
     }
 
     private int addShortcut(CommandContext<ServerCommandSource> ctx) {
         String input = StringArgumentType.getString(ctx, "input");
-        String command = extractCommand(input);
 
+        // Try chain syntax first: +-sc1--sc2-+ name
+        String[] chainNames = extractChainNames(input);
+        if (chainNames != null) {
+            String name = parseName(input);
+            if (name.isEmpty()) {
+                ctx.getSource().sendError(Text.literal("Missing shortcut name after closing +"));
+                return 0;
+            }
+            if (!name.matches("[a-z0-9_]+")) {
+                ctx.getSource().sendError(Text.literal("Name must use only lowercase letters, numbers, or underscores"));
+                return 0;
+            }
+            Map<String, String> shortcuts = getShortcuts(ctx.getSource());
+            String stored = CHAIN_PREFIX + String.join(" ", chainNames);
+            shortcuts.put(name, stored);
+            saveToFile();
+            final String[] finalNames = chainNames;
+            ctx.getSource().sendFeedback(() -> Text.literal("Chain saved: /sc " + name + " -> [" + String.join(", ", finalNames) + "]"), false);
+            return 1;
+        }
+
+        // Regular command: +/command+ name
+        String command = extractCommand(input);
         if (command == null) {
-            ctx.getSource().sendError(Text.literal("Format: /scm add +/command+ shortcutName"));
+            ctx.getSource().sendError(Text.literal("Format: /scm add +/command+ name  OR  /scm add +-sc1--sc2-+ name"));
             return 0;
         }
 
-        String name = input.substring(input.lastIndexOf('+') + 1).trim();
-
+        String name = parseName(input);
         if (name.isEmpty()) {
             ctx.getSource().sendError(Text.literal("Missing shortcut name after closing +"));
             return 0;
         }
-
         if (!name.matches("[a-z0-9_]+")) {
             ctx.getSource().sendError(Text.literal("Name must use only lowercase letters, numbers, or underscores"));
             return 0;
@@ -182,7 +258,6 @@ public class SCMod implements ModInitializer {
     private int editShortcut(CommandContext<ServerCommandSource> ctx) {
         String name = StringArgumentType.getString(ctx, "name");
         String input = StringArgumentType.getString(ctx, "input");
-        String command = extractCommand(input);
         Map<String, String> shortcuts = getShortcuts(ctx.getSource());
 
         if (!shortcuts.containsKey(name)) {
@@ -190,8 +265,20 @@ public class SCMod implements ModInitializer {
             return 0;
         }
 
+        // Support editing into a chain or a command
+        String[] chainNames = extractChainNames(input);
+        if (chainNames != null) {
+            String stored = CHAIN_PREFIX + String.join(" ", chainNames);
+            shortcuts.put(name, stored);
+            saveToFile();
+            final String[] finalNames = chainNames;
+            ctx.getSource().sendFeedback(() -> Text.literal("Updated: /sc " + name + " -> chain [" + String.join(", ", finalNames) + "]"), false);
+            return 1;
+        }
+
+        String command = extractCommand(input);
         if (command == null) {
-            ctx.getSource().sendError(Text.literal("Format: /scm edit name +/newcommand+"));
+            ctx.getSource().sendError(Text.literal("Format: /scm edit name +/newcommand+  OR  /scm edit name +-sc1--sc2-+"));
             return 0;
         }
 
@@ -244,11 +331,11 @@ public class SCMod implements ModInitializer {
             return 0;
         }
 
-        String command = shortcuts.get(existing);
-        shortcuts.put(alias, command);
+        String stored = shortcuts.get(existing);
+        shortcuts.put(alias, stored);
         saveToFile();
 
-        ctx.getSource().sendFeedback(() -> Text.literal("Alias created: /sc " + alias + " -> " + command), false);
+        ctx.getSource().sendFeedback(() -> Text.literal("Alias created: /sc " + alias + " -> " + existing), false);
         return 1;
     }
 
@@ -277,12 +364,23 @@ public class SCMod implements ModInitializer {
             return 0;
         }
 
-        String targetCommand = shortcuts.get(name);
+        String targetStored = shortcuts.get(name);
         ArrayList<String> toRemove = new ArrayList<>();
 
+        // Delete all shortcuts with the same stored value (aliases of this shortcut)
         for (Map.Entry<String, String> entry : shortcuts.entrySet()) {
-            if (entry.getValue().equals(targetCommand)) {
+            if (entry.getValue().equals(targetStored)) {
                 toRemove.add(entry.getKey());
+            }
+        }
+
+        // If it's a chain, also delete the component shortcuts
+        if (targetStored.startsWith(CHAIN_PREFIX)) {
+            String[] chainNames = targetStored.substring(CHAIN_PREFIX.length()).split(" ");
+            for (String chainName : chainNames) {
+                if (!toRemove.contains(chainName)) {
+                    toRemove.add(chainName);
+                }
             }
         }
 
@@ -290,7 +388,7 @@ public class SCMod implements ModInitializer {
         saveToFile();
 
         ctx.getSource().sendFeedback(
-            () -> Text.literal("Deleted " + toRemove.size() + " shortcut(s) pointing to: " + targetCommand),
+            () -> Text.literal("Deleted " + toRemove.size() + " shortcut(s)"),
             false
         );
         return 1;
@@ -305,8 +403,14 @@ public class SCMod implements ModInitializer {
         }
 
         ctx.getSource().sendFeedback(() -> Text.literal("--- Shortcuts ---"), false);
-        for (String name : shortcuts.keySet()) {
-            ctx.getSource().sendFeedback(() -> Text.literal("/sc " + name), false);
+        for (String key : new java.util.TreeMap<>(shortcuts).keySet()) {
+            String stored = shortcuts.get(key);
+            if (stored.startsWith(CHAIN_PREFIX)) {
+                String chain = stored.substring(CHAIN_PREFIX.length()).replace(" ", ", ");
+                ctx.getSource().sendFeedback(() -> Text.literal("/sc " + key + " [chain: " + chain + "]"), false);
+            } else {
+                ctx.getSource().sendFeedback(() -> Text.literal("/sc " + key), false);
+            }
         }
         return 1;
     }
@@ -320,8 +424,13 @@ public class SCMod implements ModInitializer {
             return 0;
         }
 
-        String cmd = shortcuts.get(name);
-        ctx.getSource().sendFeedback(() -> Text.literal("/sc " + name + " -> " + cmd), false);
+        String stored = shortcuts.get(name);
+        if (stored.startsWith(CHAIN_PREFIX)) {
+            String chain = stored.substring(CHAIN_PREFIX.length()).replace(" ", ", ");
+            ctx.getSource().sendFeedback(() -> Text.literal("/sc " + name + " -> chain [" + chain + "]"), false);
+        } else {
+            ctx.getSource().sendFeedback(() -> Text.literal("/sc " + name + " -> " + stored), false);
+        }
         return 1;
     }
 
